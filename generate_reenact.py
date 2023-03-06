@@ -8,14 +8,26 @@ http://creativecommons.org/licenses/by-nc/4.0/ or send a letter to
 Creative Commons, PO Box 1866, Mountain View, CA 94042, USA.
 """
 import argparse
+import pickle
+import torch
 from torch import nn
+from torch.nn import functional as F
 from torch.utils import data
 from torchvision import utils, transforms
 import numpy as np
-from tqdm import tqdm
-import cv2
+from torchvision.datasets import ImageFolder
 from training.dataset import *
-from training.model import Generator_32_att as Generator
+from scipy import linalg
+import random
+import time
+import os
+from tqdm import tqdm
+from copy import deepcopy
+import cv2
+from PIL import Image
+from itertools import combinations
+# need to modify
+from training.model import Generator_32 as Generator
 from training.model import Encoder_32 as Encoder
 from training.pose import Encoder_Pose
 from utils.flow_utils import flow_to_image, resize_flow
@@ -33,7 +45,6 @@ def save_image(img, path, normalize=True, range=(-1, 1)):
         range=range,
     )
 
-
 def save_image_list(img, path, normalize=True, range=(-1, 1)):
     nrow = len(img)
     utils.save_image(
@@ -44,7 +55,6 @@ def save_image_list(img, path, normalize=True, range=(-1, 1)):
         range=range,
         padding=0
     )
-
 
 def save_images(imgs, paths, normalize=True, range=(-1, 1)):
     for img, path in zip(imgs, paths):
@@ -94,19 +104,20 @@ class Model(nn.Module):
 
 
 if __name__ == "__main__":
-    DEVICE = "cuda"
+    # python generate.py --ckpt expr/checkpoints/celeba_hq_256_8x8.pt --mixing_type local_editing --test_lmdb data/celeba_hq/LMDB_test --local_editing_part nose
+    device = "cuda"
 
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
         "--mixing_type",
         type=str,
-        default='eccv'
+        default='examples'
     )
-    parser.add_argument("--inter", type=str, default='500000')
-    parser.add_argument("--ckpt", type=str, default='session/reenact/checkpoints/500000.pt')
-    parser.add_argument("--test_path", type=str, default='examples/reenactment/img')
-    parser.add_argument("--txt_path", type=str, default='examples/reenactment/pair.txt')
+    parser.add_argument("--inter", type=str, default='pair')
+    parser.add_argument("--ckpt", type=str, default='session/reenactment/checkpoints/1000000.pt')
+    parser.add_argument("--test_path", type=str, default='examples/img')
+    parser.add_argument("--txt_path", type=str, default='examples/pair_reenact.txt')
     parser.add_argument("--batch", type=int, default=1)
     parser.add_argument("--num_workers", type=int, default=1)
     parser.add_argument("--save_image_dir", type=str, default="expr")
@@ -131,7 +142,7 @@ if __name__ == "__main__":
     )
     os.makedirs(args.save_image_single_dir, exist_ok=True)
 
-    model = Model().to(DEVICE)
+    model = Model().to(device)
     model.g_ema.load_state_dict(ckpt["g_ema"])
     model.e_ema.load_state_dict(ckpt["e_ema"])
     model.e_ema_p.load_state_dict(ckpt["e_ema_p"])
@@ -139,6 +150,7 @@ if __name__ == "__main__":
 
     batch = args.batch
 
+    device = "cuda"
     transform = transforms.Compose(
         [
             transforms.Resize((256, 256)),
@@ -162,14 +174,16 @@ if __name__ == "__main__":
 
     with torch.no_grad():
         for i, (imgs, img_paths, pair) in enumerate(tqdm(loader, mininterval=1)):
-            src_img = imgs[0].to(DEVICE)
-            drv_img = imgs[1].to(DEVICE)
+            src_img = imgs[0].to(device)
+            drv_img = imgs[1].to(device)
 
             filenames = img_paths[1]
+            # print(filenames)
 
             img_s, img_d, img_r, flow = model([src_img, drv_img])
 
             for i_b, (ims, imd, imr, sn, f) in enumerate(zip(img_s, img_d, img_r, pair, flow)):
+                # print(f'******{sn}')
                 f = f.cpu().numpy().transpose([1, 2, 0])
                 f_show = flow_to_image(f)
 
@@ -177,7 +191,8 @@ if __name__ == "__main__":
                 os.makedirs(save_tmp, exist_ok=True)
                 save_image_list(
                     [ims, imd, imr],
-                    f"{save_tmp}/{sn}.png"
+                    # f"{args.save_image_pair_dir}/{trg_img_n[i_b]}_{src_img_n[i_b]}.png",   
+                    f"{save_tmp}/{sn}.png"                 
                 )
                 save_image(imr, f"{args.save_image_single_dir}/{sn}.png",)
                 im = cv2.imread(f"{save_tmp}/{sn}.png")

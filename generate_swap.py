@@ -9,19 +9,55 @@ Creative Commons, PO Box 1866, Mountain View, CA 94042, USA.
 """
 
 import argparse
+import pickle
+import torch
 from torch import nn
+from torch.nn import functional as F
 from torch.utils import data
 from torchvision import utils, transforms
+import numpy as np
+from torchvision.datasets import ImageFolder
 from training.dataset import *
+from scipy import linalg
+import random
+import time
+import os
 from tqdm import tqdm
-from training.model import Generator_globalatt_flow as Generator
+from copy import deepcopy
+import cv2
+from PIL import Image
+from itertools import combinations
+# need to modify
+from training.model import Generator_globalatt_return_32 as Generator
 from training.model import Encoder_return_32 as Encoder
-from training.pose import Encoder_Pose
 
 random.seed(0)
 torch.manual_seed(0)
 torch.cuda.manual_seed_all(0)
 
+cmap = np.array([(0, 0, 0), (255, 0, 0), (76, 153, 0),
+                 (204, 204, 0), (51, 51, 255), (204, 0, 204), (0, 255, 255),
+                 (51, 255, 255), (102, 51, 0), (255, 0, 0), (102, 204, 0),
+                 (255, 255, 0), (0, 0, 153), (0, 0, 204), (255, 51, 153),
+                 (0, 204, 204), (0, 51, 0), (255, 153, 51), (0, 204, 0)],
+                dtype=np.uint8)
+
+class Colorize(object):
+    def __init__(self, n=19):
+        self.cmap = cmap
+        self.cmap = torch.from_numpy(self.cmap[:n])
+
+    def __call__(self, gray_image):
+        size = gray_image.size()
+        color_image = torch.ByteTensor(3, size[1], size[2]).fill_(0)
+
+        for label in range(0, len(self.cmap)):
+            mask = (label == gray_image[0]).cpu()
+            color_image[0][mask] = self.cmap[label][0]
+            color_image[1][mask] = self.cmap[label][1]
+            color_image[2][mask] = self.cmap[label][2]
+
+        return color_image
 
 def save_image(img, path, normalize=True, range=(-1, 1)):
     utils.save_image(
@@ -30,7 +66,6 @@ def save_image(img, path, normalize=True, range=(-1, 1)):
         normalize=normalize,
         range=range,
     )
-
 
 def save_image_list(img, path, normalize=True, range=(-1, 1)):
     nrow = len(img)
@@ -41,7 +76,6 @@ def save_image_list(img, path, normalize=True, range=(-1, 1)):
         normalize=normalize,
         range=range,
     )
-
 
 def save_images(imgs, paths, normalize=True, range=(-1, 1)):
     for img, path in zip(imgs, paths):
@@ -77,37 +111,49 @@ class Model(nn.Module):
             args.latent_spatial_size,
             channel_multiplier=args.channel_multiplier,
         )
-        self.e_ema_p = Encoder_Pose()
+        
+    def tensor2label(self, label_tensor, n_label):
+        label_tensor = label_tensor.cpu().float()
+        if label_tensor.size()[0] > 1:
+            label_tensor = label_tensor.max(0, keepdim=True)[1]
+        label_tensor = Colorize(n_label)(label_tensor)
+        label_numpy = label_tensor.numpy()
+
+        return label_numpy
+
 
     def forward(self, input):
         trg = input[0]
         src = input[1]
-        flow, _ = self.e_ema_p(trg)
 
         trg_src = torch.cat([trg, src], dim=0)
+        # w = self.e_ema(trg_src)
 
         w, w_feat = self.e_ema(trg_src)
         w_feat_tgt = [torch.chunk(f, 2, dim=0)[0] for f in w_feat][::-1]
+
         trg_w, src_w = torch.chunk(w, 2, dim=0)
 
-        fake_img = self.g_ema([trg_w, src_w, w_feat_tgt, flow])
+        fake_img = self.g_ema([trg_w, src_w, w_feat_tgt])
+
 
         return trg, src, fake_img
 
+
 if __name__ == "__main__":
-    DEVICE = "cuda"
+    device = "cuda"
 
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
         "--mixing_type",
         type=str,
-        default='eccv'
+        default='examples'
     )
-    parser.add_argument("--inter", type=str, default='500000')
+    parser.add_argument("--inter", type=str, default='pair')
     parser.add_argument("--ckpt", type=str, default='session/swap/checkpoints/500000.pt')
-    parser.add_argument("--test_path", type=str, default='examples/swap/img')
-    parser.add_argument("--test_txt_path", type=str, default='examples/swap/pair.txt')
+    parser.add_argument("--test_path", type=str, default='examples/img/')
+    parser.add_argument("--test_txt_path", type=str, default='examples/pair_swap.txt')
     parser.add_argument("--batch", type=int, default=1)
     parser.add_argument("--num_workers", type=int, default=1)
     parser.add_argument("--save_image_dir", type=str, default="expr")
@@ -132,14 +178,14 @@ if __name__ == "__main__":
     )
     os.makedirs(args.save_image_single_dir, exist_ok=True)
 
-    model = Model().to(DEVICE)
+    model = Model().half().to(device)
     model.g_ema.load_state_dict(ckpt["g_ema"])
     model.e_ema.load_state_dict(ckpt["e_ema"])
-    model.e_ema_p.load_state_dict(ckpt["e_ema_p"])
     model.eval()
 
     batch = args.batch
 
+    device = "cuda"
     transform = transforms.Compose(
         [
             transforms.Resize((256, 256)),
@@ -162,9 +208,9 @@ if __name__ == "__main__":
     )
 
     with torch.no_grad():
-        for i, ([trg_img, trg_name], [src_img, src_name]) in enumerate(tqdm(loader, mininterval=1)):
-            trg_img = trg_img.to(DEVICE)
-            src_img = src_img.to(DEVICE)
+        for i, ([trg_img, trg_name],[src_img, src_name]) in enumerate(tqdm(loader, mininterval=1)):
+            trg_img = trg_img.half().to(device)
+            src_img = src_img.half().to(device)
             trg_img_n = trg_name
             src_img_n = src_name
 
@@ -174,6 +220,8 @@ if __name__ == "__main__":
 
                 save_image_list(
                     [imt, ims, imr1],
-                    f"{args.save_image_pair_dir}/{trg_img_n[i_b]}_{src_img_n[i_b]}.jpg",
+                    f"{args.save_image_pair_dir}/{trg_img_n[i_b]}_{src_img_n[i_b]}.jpg",                    
                 )
+                # imr1_resize = F.interpolate(imr1.unsqueeze(0), (1024, 1024)).squeeze(0)
                 save_image(imr1, f"{args.save_image_single_dir}/{trg_img_n[i_b]}.jpg")
+

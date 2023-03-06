@@ -19,9 +19,7 @@ Please download VoxCeleb2 in `data` and follow the instrcution in [FOMM](https:/
 
 ### Inference
 Please put test images to `examples` and create `pair.txt` to indicate the source and target file names. For example, `001_002` means the source file name is `001` and the target is `002`.
-Please put pre-trained models in `session`.
-
-For pre-trained models, since Deepfakes involves social impacts and ethical problems, anyone who requires for pre-trained models need to [send a request email](mailto:21832066@zju.edu.cn) with subject "APPLY FOR MODELS" to us and describe **in detail** about your personal information and purpose, and must follow strict ethical standards. We will take a zero-tolerance approach to anyone using our work for unethical purposes and actively discourage any such uses.
+Please put pre-trained models in `session`. We release the separately trained models [reenact](https://drive.google.com/file/d/1Y-Sm-_HmvPSBwz16Ol8apwnBUCYU4_tH/view?usp=sharing) and [swap](https://drive.google.com/file/d/1H3DHfld_M5F940bZMuoT_bDkW3tJZvbq/view?usp=sharing), the unified one will be available soon after we open source the journal version.
 
 ```
 git clone https://github.com/xc-csc101/UniFace
